@@ -98,5 +98,5 @@ export function isJTDDiscriminator(schema: unknown): schema is JTDDiscriminator 
 }
 
 export function isJTDRef(schema: unknown): schema is JTDRef {
-	return typeof schema === "object" && schema !== null && "ref" in schema;
+	return typeof schema === "object" && schema !== null && "ref" in schema && typeof (schema as Record<string, unknown>).ref === "string";
 }
