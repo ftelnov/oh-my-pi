@@ -152,7 +152,7 @@ export function isJTDSchema(schema: unknown): boolean {
 	if ("values" in obj) return true;
 	if ("optionalProperties" in obj) return true;
 	if ("discriminator" in obj) return true;
-	if ("ref" in obj) return true;
+	if ("ref" in obj && typeof obj.ref === "string") return true;
 
 	// JTD type primitives (JSON Schema doesn't have int32, float64, etc.)
 	if ("type" in obj) {
