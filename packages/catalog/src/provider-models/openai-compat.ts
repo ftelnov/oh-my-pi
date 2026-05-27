@@ -3783,6 +3783,7 @@ const OPENCODE_GO_API_RESOLUTION = createOpenCodeApiResolution("https://opencode
 	"minimax-m3-free": "openai-completions",
 	"qwen3.5-plus": "openai-completions",
 	"qwen3.6-plus": "openai-completions",
+	"qwen3.7-max": "anthropic-messages",
 });
 
 const COPILOT_BASE_URL = "https://api.githubcopilot.com";
