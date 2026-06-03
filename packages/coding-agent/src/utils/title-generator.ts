@@ -3,6 +3,7 @@
  */
 import * as path from "node:path";
 
+import { $ } from "bun";
 import { type Api, type AssistantMessage, completeSimple, type Model, type Tool } from "@oh-my-pi/pi-ai";
 import { isTerminalHeadless, logger, prompt } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
@@ -23,6 +24,48 @@ const TITLE_MARKER_INSTRUCTION = prompt.render(titleMarkerInstruction);
 const DEFAULT_TERMINAL_TITLE = "π";
 const TERMINAL_TITLE_CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/g;
 
+// =============================================================================
+// Tmux integration
+// =============================================================================
+
+const TMUX_PANE = process.env.TMUX_PANE;
+const insideTmux = Boolean(process.env.TMUX && TMUX_PANE);
+
+/** Module-level store for the window name captured before omp took over. */
+let savedTmuxWindowName: string | undefined;
+
+/**
+ * Rename the current tmux window. Fire-and-forget; failures are silently discarded.
+ */
+function setTmuxWindowName(name: string): void {
+	if (!insideTmux || !TMUX_PANE) return;
+	void $`tmux rename-window -t ${TMUX_PANE} ${name}`.quiet().nothrow();
+}
+
+/**
+ * Capture and cache the current tmux window name so it can be restored on exit.
+ * Runs synchronously (once, at startup) so the saved name is available for pop.
+ */
+function captureTmuxWindowName(): void {
+	if (!insideTmux || !TMUX_PANE) return;
+	const result = Bun.spawnSync(["tmux", "display-message", "-p", "-t", TMUX_PANE, "#W"], { stdout: "pipe" });
+	if (result.exitCode === 0) {
+		savedTmuxWindowName = Buffer.from(result.stdout).toString().trim() || undefined;
+	}
+}
+
+/**
+ * Restore the tmux window name saved by captureTmuxWindowName, or re-enable
+ * automatic-rename if no name was captured.
+ */
+function restoreTmuxWindowName(): void {
+	if (!insideTmux || !TMUX_PANE) return;
+	if (savedTmuxWindowName) {
+		void $`tmux rename-window -t ${TMUX_PANE} ${savedTmuxWindowName}`.quiet().nothrow();
+	} else {
+		void $`tmux set-window-option -t ${TMUX_PANE} automatic-rename on`.quiet().nothrow();
+	}
+}
 const TITLE_MAX_TOKENS = 30;
 const REASONING_SAFE_MAX_TOKENS = 1024;
 const SET_TITLE_TOOL_NAME = "set_title";
@@ -329,12 +372,15 @@ export function setTerminalTitle(title: string): void {
 
 export function setSessionTerminalTitle(sessionName: string | undefined, cwd?: string): void {
 	setTerminalTitle(formatSessionTerminalTitle(sessionName, cwd));
+	const label = sanitizeTerminalTitlePart(sessionName) ?? getFallbackTerminalTitle(cwd);
+	if (label) setTmuxWindowName(label);
 }
 
 /**
  * Save the current terminal title on terminals that support xterm window ops.
  */
 export function pushTerminalTitle(): void {
+	captureTmuxWindowName();
 	if (!process.stdout.isTTY || isTerminalHeadless()) return;
 	process.stdout.write("\x1b[22;2t");
 }
@@ -343,6 +389,7 @@ export function pushTerminalTitle(): void {
  * Restore the previously saved terminal title on terminals that support xterm window ops.
  */
 export function popTerminalTitle(): void {
+	restoreTmuxWindowName();
 	if (!process.stdout.isTTY || isTerminalHeadless()) return;
 	process.stdout.write("\x1b[23;2t");
 }
