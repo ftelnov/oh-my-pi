@@ -58,6 +58,7 @@ import { isFoundryEnabled } from "../utils/foundry";
 import { finalizeErrorMessage, type RawHttpRequestDump } from "../utils/http-inspector";
 import { getStreamFirstEventTimeoutMs, getStreamIdleTimeoutMs, iterateWithIdleTimeout } from "../utils/idle-iterator";
 import { notifyProviderResponse } from "../utils/provider-response";
+import { getRetryAfterMsFromError } from "../utils/retry-after";
 import { COMBINATOR_KEYS, NO_STRICT, toolWireSchema } from "../utils/schema";
 import { spillToDescription } from "../utils/schema/spill";
 import { createSdkStreamRequestOptions } from "../utils/sdk-stream-timeout";
@@ -1434,6 +1435,10 @@ async function* observeDecodedAnthropicSdkEvents(
 }
 
 const PROVIDER_MAX_RETRIES = 10;
+/** Base delay for exponential backoff after the mandatory retry-after wait. */
+const RATE_LIMIT_RETRY_BASE_DELAY_MS = 1000;
+/** Total budget for exponential retries after the first mandatory retry-after wait (5 min). */
+const RATE_LIMIT_RETRY_BUDGET_MS = 5 * 60 * 1000;
 
 /**
  * Log a malformed-stream-envelope anomaly without aborting the turn. The strict
@@ -1753,6 +1758,8 @@ const streamAnthropicOnce = (
 			// Provider-level transport/rate-limit failures: only before any streamed content starts.
 			// Malformed envelopes/JSON: only before replay-unsafe text/tool events are visible on this stream.
 			let providerRetryAttempt = 0;
+			let rateLimitDeadline: number | undefined;
+			let rateLimitExpAttempt = 0;
 			const firstEventTimeoutAbortError = new AIError.StreamTimeoutError(
 				"Anthropic stream timed out while waiting for the first event",
 			);
@@ -2225,6 +2232,84 @@ const streamAnthropicOnce = (
 						firstTokenTime === undefined &&
 						!streamedReplayUnsafeContent &&
 						isProviderRetryableError(streamFailure, model.provider);
+					// Rate-limit 429 with an explicit retry-after: honor the mandatory wait
+					// Anthropic specifies, then retry exponentially for up to RATE_LIMIT_RETRY_BUDGET_MS.
+					// This runs silently so the user never sees a transient rate-limit error.
+					if (!activeAbortTracker.wasCallerAbort() && canRetryProviderFailure) {
+						const retryAfterMs = getRetryAfterMsFromError(streamFailure);
+						if (retryAfterMs !== undefined) {
+							if (rateLimitDeadline === undefined) {
+								// First hit: always honor the mandatory wait, then open the exponential budget.
+								logger.debug("anthropic: rate limit, honoring retry-after", {
+									model: model.id,
+									waitMs: retryAfterMs,
+								});
+								if (options?.providerRetryWait) {
+									await options.providerRetryWait(retryAfterMs, options.signal);
+								} else {
+									await scheduler.wait(retryAfterMs, { signal: options?.signal });
+								}
+								rateLimitDeadline = Date.now() + RATE_LIMIT_RETRY_BUDGET_MS;
+								rateLimitExpAttempt = 0;
+							} else {
+								// Subsequent hit with retry-after: must fit within the remaining exponential budget.
+								const remaining = rateLimitDeadline - Date.now();
+								if (retryAfterMs > remaining) {
+									throw streamFailure;
+								}
+								logger.debug("anthropic: rate limit, honoring retry-after within budget", {
+									model: model.id,
+									waitMs: retryAfterMs,
+									remainingBudgetMs: remaining,
+								});
+								if (options?.providerRetryWait) {
+									await options.providerRetryWait(retryAfterMs, options.signal);
+								} else {
+									await scheduler.wait(retryAfterMs, { signal: options?.signal });
+								}
+								rateLimitExpAttempt = 0;
+							}
+							output.content.length = 0;
+							output.responseId = undefined;
+							output.errorMessage = strictFallbackErrorMessage;
+							output.providerPayload = undefined;
+							output.usage = createEmptyUsage(copilotDynamicHeaders?.premiumRequests);
+							output.stopReason = "stop";
+							firstTokenTime = undefined;
+							continue;
+						}
+						// Within the exponential budget window (rate-limit hit without explicit retry-after).
+						if (rateLimitDeadline !== undefined) {
+							const remaining = rateLimitDeadline - Date.now();
+							if (remaining <= 0) {
+								throw streamFailure;
+							}
+							const delay = Math.min(
+								RATE_LIMIT_RETRY_BASE_DELAY_MS * 2 ** rateLimitExpAttempt,
+								remaining,
+							);
+							logger.debug("anthropic: rate limit, exponential backoff", {
+								model: model.id,
+								delayMs: delay,
+								attempt: rateLimitExpAttempt,
+							});
+							rateLimitExpAttempt++;
+							if (options?.providerRetryWait) {
+								await options.providerRetryWait(delay, options.signal);
+							} else {
+								await scheduler.wait(delay, { signal: options?.signal });
+							}
+							output.content.length = 0;
+							output.responseId = undefined;
+							output.errorMessage = strictFallbackErrorMessage;
+							output.providerPayload = undefined;
+							output.usage = createEmptyUsage(copilotDynamicHeaders?.premiumRequests);
+							output.stopReason = "stop";
+							firstTokenTime = undefined;
+							continue;
+						}
+					}
+					// Generic transient-error retry path (non-rate-limit or no retry-after context).
 					if (
 						activeAbortTracker.wasCallerAbort() ||
 						providerRetryAttempt >= PROVIDER_MAX_RETRIES ||

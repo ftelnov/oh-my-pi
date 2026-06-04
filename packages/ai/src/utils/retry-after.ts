@@ -108,3 +108,19 @@ function parseResetHeader(value: string | undefined, unit: "ms" | "s"): number |
 	if (targetMs <= nowMs) return undefined;
 	return Math.ceil(targetMs - nowMs);
 }
+
+/**
+ * Extract the retry-after delay in milliseconds from an error object.
+ * Tries response headers first (Anthropic SDK errors carry `.headers`), then
+ * falls back to parsing the `retry-after-ms=` hint embedded in the message by
+ * `formatErrorMessageWithRetryAfter`.
+ */
+export function getRetryAfterMsFromError(error: unknown): number | undefined {
+	const fromHeaders = getRetryAfterMsFromHeaders(getHeadersFromError(error));
+	if (fromHeaders !== undefined) return fromHeaders;
+	if (!(error instanceof Error)) return undefined;
+	const idx = error.message.indexOf(RETRY_AFTER_HINT);
+	if (idx === -1) return undefined;
+	const val = parseInt(error.message.slice(idx + RETRY_AFTER_HINT.length), 10);
+	return Number.isFinite(val) && val > 0 ? val : undefined;
+}
