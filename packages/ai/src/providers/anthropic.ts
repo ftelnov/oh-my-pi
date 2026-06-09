@@ -2271,7 +2271,7 @@ const streamAnthropicOnce = (
 							}
 							output.content.length = 0;
 							output.responseId = undefined;
-							output.errorMessage = strictFallbackErrorMessage;
+							output.errorMessage = undefined;
 							output.providerPayload = undefined;
 							output.usage = createEmptyUsage(copilotDynamicHeaders?.premiumRequests);
 							output.stopReason = "stop";
@@ -2284,10 +2284,7 @@ const streamAnthropicOnce = (
 							if (remaining <= 0) {
 								throw streamFailure;
 							}
-							const delay = Math.min(
-								RATE_LIMIT_RETRY_BASE_DELAY_MS * 2 ** rateLimitExpAttempt,
-								remaining,
-							);
+							const delay = Math.min(RATE_LIMIT_RETRY_BASE_DELAY_MS * 2 ** rateLimitExpAttempt, remaining);
 							logger.debug("anthropic: rate limit, exponential backoff", {
 								model: model.id,
 								delayMs: delay,
@@ -2301,7 +2298,7 @@ const streamAnthropicOnce = (
 							}
 							output.content.length = 0;
 							output.responseId = undefined;
-							output.errorMessage = strictFallbackErrorMessage;
+							output.errorMessage = undefined;
 							output.providerPayload = undefined;
 							output.usage = createEmptyUsage(copilotDynamicHeaders?.premiumRequests);
 							output.stopReason = "stop";

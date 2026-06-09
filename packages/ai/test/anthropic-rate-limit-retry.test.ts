@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
-import type Anthropic from "@anthropic-ai/sdk";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { streamAnthropic } from "../src/providers/anthropic";
-import type { Context, Model } from "../src/types";
+import type { AnthropicMessagesClientLike } from "../src/providers/anthropic-client";
+import type { Context, Model, ModelSpec } from "../src/types";
 import { getRetryAfterMsFromError } from "../src/utils/retry-after";
 
-const model: Model<"anthropic-messages"> = {
+const modelSpec: ModelSpec<"anthropic-messages"> = {
 	id: "claude-sonnet-4-5",
 	name: "Claude Sonnet 4.5",
 	api: "anthropic-messages",
@@ -16,6 +17,7 @@ const model: Model<"anthropic-messages"> = {
 	contextWindow: 200_000,
 	maxTokens: 8_192,
 };
+const model: Model<"anthropic-messages"> = buildModel(modelSpec);
 
 const context: Context = {
 	messages: [{ role: "user", content: "Hello", timestamp: Date.now() }],
@@ -49,7 +51,11 @@ function createSuccessStream(text: string): MockAnthropicRequest {
 			yield { type: "message_stop" };
 		},
 	};
-	return { async withResponse() { return { data: stream, response, request_id: "req_ok" }; } };
+	return {
+		async withResponse() {
+			return { data: stream, response, request_id: "req_ok" };
+		},
+	};
 }
 
 function createRateLimitError(retryAfterMs: number): Error {
@@ -110,7 +116,7 @@ describe("getRetryAfterMsFromError", () => {
 describe("streamAnthropic rate-limit retry", () => {
 	it("honors mandatory retry-after on first 429 then succeeds", async () => {
 		let attempt = 0;
-		const create = ((_body: unknown, opts?: { signal?: AbortSignal }) => {
+		const create = ((_body: unknown, _opts?: { signal?: AbortSignal }) => {
 			attempt++;
 			if (attempt === 1) {
 				return {
@@ -120,11 +126,13 @@ describe("streamAnthropic rate-limit retry", () => {
 				} as never;
 			}
 			return createSuccessStream("recovered") as never;
-		}) as unknown as Anthropic["messages"]["create"];
+		}) as unknown as AnthropicMessagesClientLike["messages"]["create"];
 
 		const delays: number[] = [];
-		const client = { messages: { create } } as Anthropic;
-		const providerRetryWait = vi.fn(async (ms: number) => { delays.push(ms); });
+		const client = { messages: { create } } as AnthropicMessagesClientLike;
+		const providerRetryWait = vi.fn(async (ms: number) => {
+			delays.push(ms);
+		});
 
 		const result = await streamAnthropic(model, context, { client, providerRetryWait }).result();
 
@@ -141,18 +149,28 @@ describe("streamAnthropic rate-limit retry", () => {
 		const create = ((_body: unknown) => {
 			attempt++;
 			if (attempt === 1) {
-				return { async withResponse() { throw createRateLimitError(500); } } as never;
+				return {
+					async withResponse() {
+						throw createRateLimitError(500);
+					},
+				} as never;
 			}
 			if (attempt === 2) {
 				// Second attempt: rate-limit without retry-after (triggers exponential backoff)
-				return { async withResponse() { throw new Error("429 rate limit exceeded"); } } as never;
+				return {
+					async withResponse() {
+						throw new Error("429 rate limit exceeded");
+					},
+				} as never;
 			}
 			return createSuccessStream("ok") as never;
-		}) as unknown as Anthropic["messages"]["create"];
+		}) as unknown as AnthropicMessagesClientLike["messages"]["create"];
 
 		const delays: number[] = [];
-		const client = { messages: { create } } as Anthropic;
-		const providerRetryWait = vi.fn(async (ms: number) => { delays.push(ms); });
+		const client = { messages: { create } } as AnthropicMessagesClientLike;
+		const providerRetryWait = vi.fn(async (ms: number) => {
+			delays.push(ms);
+		});
 
 		const result = await streamAnthropic(model, context, { client, providerRetryWait }).result();
 
@@ -171,20 +189,31 @@ describe("streamAnthropic rate-limit retry", () => {
 			attempt++;
 			if (attempt <= 2) {
 				// Rate limit error but NO retry-after hint — goes through generic path
-				return { async withResponse() { throw new Error("429 rate limit exceeded"); } } as never;
+				return {
+					async withResponse() {
+						throw new Error("429 rate limit exceeded");
+					},
+				} as never;
 			}
 			return createSuccessStream("generic retry ok") as never;
-		}) as unknown as Anthropic["messages"]["create"];
+		}) as unknown as AnthropicMessagesClientLike["messages"]["create"];
 
 		const delays: number[] = [];
-		const client = { messages: { create } } as Anthropic;
-		const providerRetryWait = vi.fn(async (ms: number) => { delays.push(ms); });
+		const client = { messages: { create } } as AnthropicMessagesClientLike;
+		const providerRetryWait = vi.fn(async (ms: number) => {
+			delays.push(ms);
+		});
 
 		const result = await streamAnthropic(model, context, { client, providerRetryWait }).result();
 
 		expect(attempt).toBe(3);
-		// Generic delays: 2000ms (attempt 1), 4000ms (attempt 2)
-		expect(delays).toEqual([2000, 4000]);
+		// No retry-after + no open rate-limit budget → generic transient-retry path,
+		// not the rate-limit exponential backoff (whose fixed base delay is 1000ms).
+		// The generic path applies jittered backoff via calculateAnthropicRetryDelayMs,
+		// so the first delay stays below 1000ms and each retry grows.
+		expect(delays).toHaveLength(2);
+		expect(delays[0]).toBeLessThan(1000);
+		expect(delays[1]).toBeGreaterThan(delays[0]);
 		expect(result.stopReason).toBe("stop");
 	});
 
@@ -195,13 +224,21 @@ describe("streamAnthropic rate-limit retry", () => {
 		const create = ((_body: unknown) => {
 			attempt++;
 			if (attempt === 1) {
-				return { async withResponse() { throw createRateLimitError(100); } } as never;
+				return {
+					async withResponse() {
+						throw createRateLimitError(100);
+					},
+				} as never;
 			}
 			// Second attempt still rate-limited with a huge retry-after
-			return { async withResponse() { throw createRateLimitError(400_000); } } as never;
-		}) as unknown as Anthropic["messages"]["create"];
+			return {
+				async withResponse() {
+					throw createRateLimitError(400_000);
+				},
+			} as never;
+		}) as unknown as AnthropicMessagesClientLike["messages"]["create"];
 
-		const client = { messages: { create } } as Anthropic;
+		const client = { messages: { create } } as AnthropicMessagesClientLike;
 		const providerRetryWait = vi.fn(async () => {});
 
 		const result = await streamAnthropic(model, context, { client, providerRetryWait }).result();
@@ -214,11 +251,15 @@ describe("streamAnthropic rate-limit retry", () => {
 
 	it("respects AbortSignal during mandatory retry-after wait", async () => {
 		const create = ((_body: unknown) => {
-			return { async withResponse() { throw createRateLimitError(60_000); } } as never;
-		}) as unknown as Anthropic["messages"]["create"];
+			return {
+				async withResponse() {
+					throw createRateLimitError(60_000);
+				},
+			} as never;
+		}) as unknown as AnthropicMessagesClientLike["messages"]["create"];
 
 		const controller = new AbortController();
-		const client = { messages: { create } } as Anthropic;
+		const client = { messages: { create } } as AnthropicMessagesClientLike;
 		const providerRetryWait = vi.fn(async (_ms: number, signal?: AbortSignal) => {
 			// Abort during the wait, simulating user cancellation
 			controller.abort();
