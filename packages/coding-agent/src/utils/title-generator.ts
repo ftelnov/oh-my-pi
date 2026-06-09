@@ -3,7 +3,6 @@
  */
 import * as path from "node:path";
 
-import { $ } from "bun";
 import { type Api, type AssistantMessage, completeSimple, type Model, type Tool } from "@oh-my-pi/pi-ai";
 import { isTerminalHeadless, logger, prompt } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
@@ -28,18 +27,37 @@ const TERMINAL_TITLE_CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/g;
 // Tmux integration
 // =============================================================================
 
-const TMUX_PANE = process.env.TMUX_PANE;
-const insideTmux = Boolean(process.env.TMUX && TMUX_PANE);
+/** Resolve the active tmux pane id, or undefined when not running inside tmux. */
+function tmuxPane(): string | undefined {
+	const pane = process.env.TMUX_PANE;
+	return process.env.TMUX && pane ? pane : undefined;
+}
 
 /** Module-level store for the window name captured before omp took over. */
 let savedTmuxWindowName: string | undefined;
 
 /**
- * Rename the current tmux window. Fire-and-forget; failures are silently discarded.
+ * Run a tmux command, discarding output and failures.
+ *
+ * Uses spawnSync rather than Bun's `$`: a `$` ShellPromise is lazy and never
+ * runs unless it is awaited or `.then`-ed, so the previous un-awaited
+ * fire-and-forget form silently did nothing and the window was never renamed.
+ */
+function runTmuxQuiet(args: string[]): void {
+	try {
+		Bun.spawnSync(["tmux", ...args], { stdout: "ignore", stderr: "ignore" });
+	} catch {
+		// A missing tmux binary makes spawnSync throw ENOENT; discard per contract.
+	}
+}
+
+/**
+ * Rename the current tmux window. Failures are silently discarded.
  */
 function setTmuxWindowName(name: string): void {
-	if (!insideTmux || !TMUX_PANE) return;
-	void $`tmux rename-window -t ${TMUX_PANE} ${name}`.quiet().nothrow();
+	const pane = tmuxPane();
+	if (!pane) return;
+	runTmuxQuiet(["rename-window", "-t", pane, name]);
 }
 
 /**
@@ -47,8 +65,9 @@ function setTmuxWindowName(name: string): void {
  * Runs synchronously (once, at startup) so the saved name is available for pop.
  */
 function captureTmuxWindowName(): void {
-	if (!insideTmux || !TMUX_PANE) return;
-	const result = Bun.spawnSync(["tmux", "display-message", "-p", "-t", TMUX_PANE, "#W"], { stdout: "pipe" });
+	const pane = tmuxPane();
+	if (!pane) return;
+	const result = Bun.spawnSync(["tmux", "display-message", "-p", "-t", pane, "#W"], { stdout: "pipe" });
 	if (result.exitCode === 0) {
 		savedTmuxWindowName = Buffer.from(result.stdout).toString().trim() || undefined;
 	}
@@ -59,11 +78,12 @@ function captureTmuxWindowName(): void {
  * automatic-rename if no name was captured.
  */
 function restoreTmuxWindowName(): void {
-	if (!insideTmux || !TMUX_PANE) return;
+	const pane = tmuxPane();
+	if (!pane) return;
 	if (savedTmuxWindowName) {
-		void $`tmux rename-window -t ${TMUX_PANE} ${savedTmuxWindowName}`.quiet().nothrow();
+		runTmuxQuiet(["rename-window", "-t", pane, savedTmuxWindowName]);
 	} else {
-		void $`tmux set-window-option -t ${TMUX_PANE} automatic-rename on`.quiet().nothrow();
+		runTmuxQuiet(["set-window-option", "-t", pane, "automatic-rename", "on"]);
 	}
 }
 const TITLE_MAX_TOKENS = 30;

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "bun:test";
 import type { Api, Model } from "@oh-my-pi/pi-ai";
 import * as ai from "@oh-my-pi/pi-ai";
 import { type GeneratedProvider, getBundledModel } from "@oh-my-pi/pi-catalog/models";
-import { generateSessionTitle } from "@oh-my-pi/pi-coding-agent/utils/title-generator";
+import { generateSessionTitle, setSessionTerminalTitle } from "@oh-my-pi/pi-coding-agent/utils/title-generator";
 import { logger } from "@oh-my-pi/pi-utils";
 
 function getModelOrThrow(id: string): Model<Api> {
@@ -455,5 +455,52 @@ describe("title generator", () => {
 		await generateSessionTitle("Some message", registry, currentSettings);
 		expect(mockComplete).toHaveBeenCalled();
 		expect(mockComplete.mock.calls[0]?.[0]).toBe(smolModel);
+	});
+});
+
+describe("tmux window naming", () => {
+	const origTmux = process.env.TMUX;
+	const origPane = process.env.TMUX_PANE;
+
+	function restoreEnv(key: "TMUX" | "TMUX_PANE", value: string | undefined) {
+		if (value === undefined) delete process.env[key];
+		else process.env[key] = value;
+	}
+
+	afterEach(() => {
+		restoreEnv("TMUX", origTmux);
+		restoreEnv("TMUX_PANE", origPane);
+		vi.restoreAllMocks();
+	});
+
+	function spySpawnSync(): string[][] {
+		const calls: string[][] = [];
+		vi.spyOn(Bun, "spawnSync").mockImplementation(((cmd: string[]) => {
+			calls.push(cmd);
+			return { exitCode: 0, stdout: Buffer.from(""), stderr: Buffer.from("") };
+		}) as never);
+		return calls;
+	}
+
+	it("dispatches a synchronous tmux rename-window for the session name when inside tmux", () => {
+		// Regression: the rename used an un-awaited Bun `$` ShellPromise, which is
+		// lazy and never ran, so the window was never renamed. It must execute.
+		process.env.TMUX = "/tmp/tmux-1000/default,123,0";
+		process.env.TMUX_PANE = "%9";
+		const calls = spySpawnSync();
+
+		setSessionTerminalTitle("My Session", "/tmp/project");
+
+		expect(calls).toContainEqual(["tmux", "rename-window", "-t", "%9", "My Session"]);
+	});
+
+	it("does not invoke tmux when not running inside tmux", () => {
+		delete process.env.TMUX;
+		delete process.env.TMUX_PANE;
+		const calls = spySpawnSync();
+
+		setSessionTerminalTitle("My Session", "/tmp/project");
+
+		expect(calls).toEqual([]);
 	});
 });
