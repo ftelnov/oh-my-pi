@@ -227,7 +227,7 @@ export async function listTools(
 		}
 
 		const result = await connection.transport.request<MCPToolsListResult>("tools/list", params, options);
-		allTools.push(...result.tools);
+		allTools.push(...(result.tools ?? []));
 		cursor = result.nextCursor;
 	} while (cursor);
 
@@ -297,7 +297,7 @@ export async function listResources(
 		}
 
 		const result = await connection.transport.request<MCPResourcesListResult>("resources/list", params, options);
-		allResources.push(...result.resources);
+		allResources.push(...(result.resources ?? []));
 		cursor = result.nextCursor;
 	} while (cursor);
 
@@ -349,7 +349,7 @@ export async function listResourceTemplates(
 				params,
 				options,
 			);
-			allTemplates.push(...result.resourceTemplates);
+			allTemplates.push(...(result.resourceTemplates ?? []));
 			cursor = result.nextCursor;
 		} while (cursor);
 	} catch (error) {
@@ -474,7 +474,7 @@ export async function listPrompts(
 		}
 
 		const result = await connection.transport.request<MCPPromptsListResult>("prompts/list", params, options);
-		allPrompts.push(...result.prompts);
+		allPrompts.push(...(result.prompts ?? []));
 		cursor = result.nextCursor;
 	} while (cursor);
 
