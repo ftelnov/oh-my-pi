@@ -1460,6 +1460,43 @@
 - Fixed install.sh falsely reporting success on musl-based systems (such as Alpine Linux) when the binary fails to start; the installer now smoke-tests the binary, exits non-zero on failure, and provides remediation steps.
 - Fixed Codex config.toml discovery incorrectly importing MCP servers that are configured with enabled = false.
 - Fixed bash.patterns allow rules rejecting valid commands when quoted arguments contained shell metacharacters (such as Cargo benchmark regex filters).
+- Fixed `irc` live message delivery so successfully handed-off messages are no longer enqueued as mailbox mail, so they do not inflate unread `irc` counts
+- Fixed `irc send` with `await: true` to wait for a fresh reply to the current call instead of consuming previously buffered messages
+- Fixed main-session chat output to stop duplicating outbound `irc` sends from the main agent as relay cards
+- Fixed task-tool runtime compatibility so legacy flat `task` calls (`agent`, `assignment`) still execute under `task.batch` even though the wire schema is batch-first
+- Fixed the `job` tool's TUI preview leaking the model-facing `<task-result>` envelope for settled task jobs — the preview now shows the inner output body, and pretty-printed JSON bodies are flattened onto one line instead of previewing a lone `{`
+- Fixed npm CLI distribution bundles by embedding the stats dashboard client bundle so dashboard assets are served in prebuilt installs
+- Fixed the `resolve` tool's result block turning white after the leading icon: the accent-styled symbol embedded a foreground reset inside the inverse-rendered line, dropping the block color for the rest of the row
+- Fixed the CLI smoke-test command to start the stats server and verify dashboard HTML is served, catching bundled-asset regressions
+- Added verification of a `<div id="root"></div>` and `index.js` in smoke-test dashboard responses
+- Restored the checkmark glyph on ask-tool custom answers and the multi-select "Done selecting" option, which a status-glyph sweep had swapped for the ask tool icon
+- Fixed the `thinking.autoPending` statusbar indicator using question-mark glyphs (`▣?`, nf-md-help_box, `[?]`) in every symbol preset, which made the auto-thinking pending state indistinguishable from a terminal missing-glyph fallback. Replaced with clear loading indicators (`⟳`, fa-circle-o-notch, `[~]`) ([#2267](https://github.com/can1357/oh-my-pi/issues/2267)).
+- Fixed `tab.screenshot({ save })` ignoring the save path's extension: an explicit `.webp`/`.jpg` destination received hardcoded PNG bytes behind a mismatched name. The full-res capture format is now derived from the save path (`png`/`jpeg`/`webp`, puppeteer-native), and the reported mime type follows the bytes actually written; unknown or missing extensions still capture PNG
+- Fixed an infinite `compaction.strategy: shake` auto-continue loop in thinking-heavy sessions: the post-shake check now uses the provider-anchored trigger metric (instead of a local estimate that undercounts `thinkingSignature` payloads) and only treats pressure as resolved when residual context lands inside an 80% recovery band, so shake reliably falls back to context-full compaction when it cannot create real headroom ([#2275](https://github.com/can1357/oh-my-pi/issues/2275)).
+- Fixed the tmux window name not updating to the current omp session title when running inside tmux. The window rename (and the restore-on-exit) issued an un-awaited Bun `$` command, which is a lazy `ShellPromise` that never runs unless awaited/`.then`-ed, so the rename silently did nothing; the `tmux` calls now dispatch synchronously via `Bun.spawnSync`.
+- Fixed eager-todo enforcement forcing `tool_choice: todo_write` on turns whose serialized tools omit `todo_write` (MCP-scoped, restricted-toolset, and subagent turns). The prelude now gates on the per-turn `agent.state.tools` rather than the global `#toolRegistry`, and `AgentSession.nextToolChoice` filters dequeued named choices against the same active tool set — rejecting them with reason `"unavailable"` so the directive's `onRejected` policy (e.g. `/force` and pending-action reminders) can requeue rather than silently discard. Together these stop the queue from yielding a self-inconsistent request body (`tool_choice` naming a function absent from `tools`) and trip spec-strict OpenAI-compatible providers with `400 invalid_parameter_error: The tool specified in tool_choice does not match any of the specified tools` ([#1701](https://github.com/can1357/oh-my-pi/issues/1701)).
+- Fixed MCP servers that advertise the `resources` (or `prompts`) capability but return a `null` array from `resources/list`, `resources/templates/list`, `tools/list`, or `prompts/list` (observed with the gitverse-ci HTTP server returning `{ "resources": null }`). The client spread the response array directly, so a `null` payload threw `Spread syntax requires ...iterable not be null or undefined` and aborted MCP resource loading on every (re)connect. The list helpers now coalesce a missing array to `[]`.
+
+## [15.10.12] - 2026-06-10
+
+### Added
+
+- Added RPC subagent subscription frames, snapshots, and transcript catch-up APIs for desktop clients embedding `omp --mode rpc`.
+- Added opt-in `shellMinimizer.sourceOutlineLevel` and `shellMinimizer.legacyFilters` settings so shell minimization can tune source outlining and selectively fall back to conservative legacy routing.
+- Added repeatable `--config <path>` CLI overlays for temporary `config.yml`-style settings without editing the persistent global config ([#1733](https://github.com/can1357/oh-my-pi/issues/1733)).
+- Added `python.interpreter` to pin eval's Python backend to an explicit interpreter and skip automatic runtime discovery ([#1802](https://github.com/can1357/oh-my-pi/issues/1802)).
+- Added `!command` resolution for `models.yml` provider `apiKey` values and provider/model headers ([#1888](https://github.com/can1357/oh-my-pi/issues/1888)).
+- Documented the oMLX setup path through existing OpenAI-compatible local discovery ([#1957](https://github.com/can1357/oh-my-pi/issues/1957)).
+- Added `TITLE_SYSTEM.md` discovery so users can override the automatic session-title generation prompt for online and local tiny title models without patching installed prompt files. The override is re-discovered when the session working directory changes via `/cwd`.
+- Added a structured memory runtime surface for extensions and UI integrations to query backend status, search memories, and save explicit memories across the configured memory backend.
+- Added support for Git repositories using the `reftable` storage format by detecting `extensions.refStorage = reftable` in the repository configuration and falling back to shelling out to Git commands (`git symbolic-ref`, `git rev-parse`) for reference and HEAD resolution.
+- Added `/setup providers` (also available as `/setup` or `/providers`) to reopen the interactive provider setup scene from an active TUI session, letting users sign in and choose a web search provider without rerunning the full onboarding flow.
+
+### Changed
+
+- Bash execution now preserves minimized shell output inline while saving the untouched capture as an `artifact://…` footer when shell minimization rewrites a command's output.
+- Task tool live progress now renders finished subagents first and keeps unfinished (pending/running) ones pinned at the bottom of the list.
+- `OutputSink` artifact files (`~/.omp/agent/artifacts/<id>.<tool>.log`) are unbounded by default again, so `artifact://<id>` references preserve the complete raw stream. The head + rolling-tail capping machinery from [#2081](https://github.com/can1357/oh-my-pi/issues/2081) (with its `[ARTIFACT TRUNCATED: …]` close notice) remains available as an opt-in via `artifactMaxBytes`, and the head window now closes permanently on first overflow so later small chunks cannot be written out of order before the tail replay.
 
 ## [17.2.6] - 2026-08-03
 
