@@ -59,6 +59,17 @@ describe("listPrompts", () => {
 		const result = await listPrompts(conn);
 		expect(result).toEqual([...page1, ...page2]);
 	});
+
+	it("treats a null prompts array (non-spec-compliant server) as empty instead of throwing", async () => {
+		const responses = new Map<string, unknown[]>([
+			["prompts/list", [{ prompts: null } as unknown as MCPPromptsListResult]],
+		]);
+		const transport = createMockTransport(responses);
+		const conn = createMockConnection({ prompts: {} }, transport);
+
+		const result = await listPrompts(conn);
+		expect(result).toEqual([]);
+	});
 });
 
 describe("getPrompt", () => {

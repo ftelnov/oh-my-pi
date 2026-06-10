@@ -54,6 +54,17 @@ describe("listResources", () => {
 		expect(second).toBe(first);
 	});
 
+	it("treats a null resources array (non-spec-compliant server) as empty instead of throwing", async () => {
+		// gitverse-ci and similar servers advertise the resources capability but
+		// return `{ resources: null }`; spreading null crashed resource loading.
+		const page = { resources: null } as unknown as MCPResourcesListResult;
+		const transport = createMockTransport(new Map([["resources/list", [page]]]));
+		const conn = createMockConnection({ resources: {} }, transport);
+
+		const result = await listResources(conn);
+		expect(result).toEqual([]);
+	});
+
 	it("handles pagination with multiple pages", async () => {
 		const page1: MCPResourcesListResult = {
 			resources: [{ uri: "file:///p1.txt", name: "p1.txt" }],
@@ -94,6 +105,15 @@ describe("listResourceTemplates", () => {
 		// Second call should return cached value without hitting transport
 		const second = await listResourceTemplates(conn);
 		expect(second).toBe(result);
+	});
+
+	it("treats a null resourceTemplates array (non-spec-compliant server) as empty instead of throwing", async () => {
+		const page = { resourceTemplates: null } as unknown as MCPResourceTemplatesListResult;
+		const transport = createMockTransport(new Map([["resources/templates/list", [page]]]));
+		const conn = createMockConnection({ resources: {} }, transport);
+
+		const result = await listResourceTemplates(conn);
+		expect(result).toEqual([]);
 	});
 });
 
