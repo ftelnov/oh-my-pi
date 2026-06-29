@@ -1904,10 +1904,10 @@ describe("ModelRegistry", () => {
 			expect(model?.isOAuth).toBe(true);
 		});
 
-		test("auth: apiKey opts out of the anthropic-messages default", () => {
+		test("auth: apiKey hard-disables the anthropic-messages OAuth default (isOAuth=false)", () => {
 			const model = apiKeyOptOut.find("proxy-anthropic", "claude-sonnet-4-5");
 			expect(model).toBeDefined();
-			expect(model?.isOAuth).toBeUndefined();
+			expect(model?.isOAuth).toBe(false);
 		});
 
 		test("non-anthropic apis do not get the OAuth default", () => {
