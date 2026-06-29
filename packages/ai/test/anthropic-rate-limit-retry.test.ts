@@ -140,7 +140,7 @@ describe("streamAnthropic rate-limit retry", () => {
 		expect(attempt).toBe(2);
 		expect(delays).toEqual([3000]);
 		expect(result.stopReason).toBe("stop");
-		expect(result.content).toEqual([{ type: "text", text: "recovered" }]);
+		expect(JSON.parse(JSON.stringify(result.content))).toEqual([{ type: "text", text: "recovered" }]);
 	});
 
 	it("uses exponential backoff within 5-minute budget on subsequent rate-limit errors", async () => {
