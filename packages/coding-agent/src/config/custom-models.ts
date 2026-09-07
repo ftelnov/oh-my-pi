@@ -51,12 +51,19 @@ export function mergeAuthHeaderSources(
 /**
  * Decide whether a custom-yaml model should force OAuth-style request shaping.
  * - Explicit `auth: oauth` → force on.
+ * - Explicit `auth: apiKey` → force OFF. Returning `false` (not `undefined`)
+ *   hard-disables Claude-Code/OAuth request shaping so the OAuth-token prefix
+ *   heuristic in buildAnthropicClientOptions can't silently re-enable cloaking
+ *   when the configured key merely looks like an OAuth token (e.g. the
+ *   `anthropic-hosted` endpoint, whose key is always set and not under our control).
+ * - No explicit `auth` and `api: anthropic-messages` → default on. Custom Anthropic
  *   endpoints are typically Claude-Code-style proxies (e.g. CLIProxyAPI) that expect
  *   the cloaked request shape regardless of how the proxy itself is authenticated.
  * - Otherwise → unset.
  */
 function resolveCustomModelIsOAuth(api: Api, providerAuth: ProviderAuthMode | undefined): boolean | undefined {
 	if (providerAuth === "oauth") return true;
+	if (providerAuth === "apiKey") return false;
 	if (providerAuth !== undefined) return undefined;
 	if (api === "anthropic-messages") return true;
 	return undefined;
