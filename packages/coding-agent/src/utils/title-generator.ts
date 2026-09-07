@@ -449,6 +449,66 @@ function unwrapJsonTitle(candidate: string): string {
 /**
  * Remove control characters so model-generated titles cannot inject terminal escapes.
  */
+/** Resolve the active tmux pane id, or undefined when not running inside tmux. */
+function tmuxPane(): string | undefined {
+	const pane = process.env.TMUX_PANE;
+	return process.env.TMUX && pane ? pane : undefined;
+}
+
+/** Module-level store for the window name captured before omp took over. */
+let savedTmuxWindowName: string | undefined;
+
+/**
+ * Run a tmux command, discarding output and failures.
+ *
+ * Uses spawnSync rather than Bun's `$`: a `$` ShellPromise is lazy and never
+ * runs unless it is awaited or `.then`-ed, so the previous un-awaited
+ * fire-and-forget form silently did nothing and the window was never renamed.
+ */
+function runTmuxQuiet(args: string[]): void {
+	try {
+		Bun.spawnSync(["tmux", ...args], { stdout: "ignore", stderr: "ignore" });
+	} catch {
+		// A missing tmux binary makes spawnSync throw ENOENT; discard per contract.
+	}
+}
+
+/**
+ * Rename the current tmux window. Failures are silently discarded.
+ */
+function setTmuxWindowName(name: string): void {
+	const pane = tmuxPane();
+	if (!pane) return;
+	runTmuxQuiet(["rename-window", "-t", pane, name]);
+}
+
+/**
+ * Capture and cache the current tmux window name so it can be restored on exit.
+ * Runs synchronously (once, at startup) so the saved name is available for pop.
+ */
+function captureTmuxWindowName(): void {
+	const pane = tmuxPane();
+	if (!pane) return;
+	const result = Bun.spawnSync(["tmux", "display-message", "-p", "-t", pane, "#W"], { stdout: "pipe" });
+	if (result.exitCode === 0) {
+		savedTmuxWindowName = Buffer.from(result.stdout).toString().trim() || undefined;
+	}
+}
+
+/**
+ * Restore the tmux window name saved by captureTmuxWindowName, or re-enable
+ * automatic-rename if no name was captured.
+ */
+function restoreTmuxWindowName(): void {
+	const pane = tmuxPane();
+	if (!pane) return;
+	if (savedTmuxWindowName) {
+		runTmuxQuiet(["rename-window", "-t", pane, savedTmuxWindowName]);
+	} else {
+		runTmuxQuiet(["set-window-option", "-t", pane, "automatic-rename", "on"]);
+	}
+}
+
 function sanitizeTerminalTitlePart(value: string | undefined): string | undefined {
 	if (!value) return undefined;
 	const sanitized = value.replace(TERMINAL_TITLE_CONTROL_CHARS, "").trim();
@@ -487,6 +547,7 @@ export function setSessionTerminalTitle(sessionName: string | undefined, cwd?: s
 	terminalTitleRuntime.extensionOverride = undefined;
 	terminalTitleRuntime.label = sanitizeTerminalTitlePart(sessionName) ?? getFallbackTerminalTitle(cwd);
 	emitTerminalTitle();
+	if (terminalTitleRuntime.label) setTmuxWindowName(terminalTitleRuntime.label);
 }
 
 /**
@@ -621,6 +682,7 @@ export function disposeTerminalTitleState(): void {
  * Save the current terminal title on terminals that support xterm window ops.
  */
 export function pushTerminalTitle(): void {
+	captureTmuxWindowName();
 	if (!process.stdout.isTTY || isTerminalHeadless()) return;
 	writeTitleSequence("\x1b[22;2t");
 }
@@ -629,6 +691,7 @@ export function pushTerminalTitle(): void {
  * Restore the previously saved terminal title on terminals that support xterm window ops.
  */
 export function popTerminalTitle(): void {
+	restoreTmuxWindowName();
 	if (!process.stdout.isTTY || isTerminalHeadless()) return;
 	writeTitleSequence("\x1b[23;2t");
 }
